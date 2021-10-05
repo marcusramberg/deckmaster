@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
+	"github.com/fsnotify/fsnotify"
 	"github.com/godbus/dbus"
 	"github.com/muesli/streamdeck"
 )
@@ -24,11 +25,12 @@ type Deck struct {
 }
 
 // LoadDeck loads a deck configuration.
-func LoadDeck(dev *streamdeck.Device, base string, deck string) (*Deck, error) {
-	path, err := expandPath(base, deck)
+func LoadDeck(dev *streamdeck.Device, base string, deckName string) (*Deck, error) {
+	path, err := expandPath(base, deckName)
 	if err != nil {
 		return nil, err
 	}
+	currentDeck = path
 	fmt.Println("Loading deck:", path)
 
 	dc, err := LoadConfig(path)
@@ -68,6 +70,42 @@ func LoadDeck(dev *streamdeck.Device, base string, deck string) (*Deck, error) {
 		}
 
 		d.Widgets = append(d.Widgets, w)
+	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err == nil {
+		err = watcher.Add(path)
+		if err == nil {
+
+			go func() {
+				for {
+					select {
+					case event := <-watcher.Events:
+						if currentDeck == path {
+							fmt.Printf("Change:  %s: %s\n", event.Op, event.Name)
+							d, err := LoadDeck(dev, base, deckName)
+							if err != nil {
+								fatal(err)
+							}
+							err = dev.Clear()
+							if err != nil {
+								fatal(err)
+							}
+
+							deck = d
+							deck.updateWidgets()
+							return
+						}
+					case error := <-watcher.Errors:
+						fmt.Printf("Watcher had an error: %s\n", error)
+					}
+				}
+			}()
+		} else {
+			fmt.Printf("Failed to watch deck, automatic reloading diabled: %s\n", err)
+		}
+	} else {
+		fmt.Printf("Failed to initialize fsnotify, automatic reloading diabled: %s\n", err)
 	}
 
 	return &d, nil
